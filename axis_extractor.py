@@ -4,11 +4,13 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import patches
+from scipy.interpolate import griddata
 from scipy.optimize import curve_fit
 from glob import glob
 
 # --- פונקציות עיבוד ---
 from amplitude_stuff import detect_circle_mask
+from sim3 import simulate
 
 
 def load_images_by_angle(paths: dict[str, str]):
@@ -54,6 +56,8 @@ def create_circle_mask(shape, center_x, center_y, outer_radius, inner_radius_rat
     Returns:
     - mask: boolean numpy array, True inside the ring area
     """
+    # if (inner_radius_ratio == 0):
+    #     return
     Y, X = np.ogrid[:shape[0], :shape[1]]
     dist_from_center = np.sqrt((X - center_x) ** 2 + (Y - center_y) ** 2)
 
@@ -64,6 +68,7 @@ def create_circle_mask(shape, center_x, center_y, outer_radius, inner_radius_rat
 
     ring_mask = outer_mask & ~inner_mask
     return ring_mask
+
 
 def extract_stress_directions(images_by_angle, mask):
     angles = sorted(images_by_angle.keys())
@@ -146,12 +151,54 @@ def fast_stress_direction_torch(images_by_angle, mask_np, device='cuda'):
     return theta_map.cpu().numpy()
 
 
+def plot_hourglass(width, height, ax, center_x, center_y, color='red', alpha=1.0):
+    """
+    Plots an hourglass/bow-tie shape with specified dimensions.
+
+    Parameters:
+    width (float): Total width of the hourglass at its widest points
+    height (float): Total height of the hourglass
+    """
+    # Create figure and axis
+    # fig, ax = plt.subplots(1, 1, figsize=(8, 12))
+
+    # Calculate half dimensions for positioning
+    half_width = width / 2
+    half_height = height / 2
+
+    # Define the vertices for the hourglass shape (centered at center_x, center_y)
+    # Top triangle vertices
+    top_triangle_x = [center_x - half_width, center_x + half_width, center_x, center_x - half_width]
+    top_triangle_y = [center_y + half_height, center_y + half_height, center_y, center_y + half_height]
+
+    # Bottom triangle vertices
+    bottom_triangle_x = [center_x - half_width, center_x + half_width, center_x, center_x - half_width]
+    bottom_triangle_y = [center_y - half_height, center_y - half_height, center_y, center_y - half_height]
+
+    # Plot and fill the triangles
+    ax.fill(top_triangle_x, top_triangle_y, color=color, alpha=alpha)
+    ax.fill(bottom_triangle_x, bottom_triangle_y, color=color, alpha=alpha)
+
 def plot_theta_map(theta_map, save_path: str, title='Principal Stress Directions', outer_radius=0, inner_ratio=0,
-                   center=None,    thickness=1/2):
+                   center=None, thickness=1 / 2, extra_data= None, axs=None, index=0):
     print(save_path)
 
-    fig, ax = plt.subplots()
+    if  axs is None:
+        fig, ax = plt.subplots()
+    else:
+        ax = axs[math.floor(index/2), index % 2]
     im = ax.imshow(theta_map, cmap='hsv', vmin=0, vmax=180)
+    if extra_data:
+        # see simulation result to understand the graph
+        alpha=0.7
+        plt.plot([0, len(theta_map)], [center[1]-5, center[1]-5], color='red', linestyle='-', linewidth=2,alpha=alpha)
+        # X_rot, Y_rot, isoclinic_mask = extra_data()
+        #
+        # # Create new grid matching the image dimensions
+        img_height, img_width = len(theta_map), len(theta_map[1])
+        # plot_hourglass(200, img_height, ax=ax, center_x=center[0], center_y=center[1], alpha=alpha)
+        plot_hourglass(250, img_height, ax=ax, center_x=center[0],center_y=center[1], alpha=alpha)
+
     if center and outer_radius > 0:
         outer_circle = patches.Circle(center, radius=outer_radius, edgecolor='black',
                                       facecolor='none', linewidth=thickness)
@@ -161,14 +208,14 @@ def plot_theta_map(theta_map, save_path: str, title='Principal Stress Directions
             inner_circle = patches.Circle(center, radius=outer_radius * inner_ratio, edgecolor='black',
                                           facecolor='none', linewidth=thickness)
             ax.add_patch(inner_circle)
-
-    plt.colorbar(im, ax=ax, label='Theta (degrees)')
+    else:
+        plt.colorbar(im, ax=ax, label='Theta (degrees)')
     ax.set_title(title)
     ax.axis('off')
-    plt.tight_layout()
-    plt.savefig(save_path, bbox_inches='tight')
-    plt.close()
-
+    if ( axs  is None):
+        plt.tight_layout()
+        plt.savefig(save_path, bbox_inches='tight')
+        plt.close()
 
 
 def filter_and_dilate_theta(theta_map, min_deg=5, dilation_size=10):
@@ -190,6 +237,7 @@ def filter_and_dilate_theta(theta_map, min_deg=5, dilation_size=10):
 
     return highlight_rgb
 
+
 def plot_theta_with_highlight(theta_map, dilated_mask, title="Filtered Theta Map", save_path=None):
     plt.figure(figsize=(10, 8))
     # plt.imshow(theta_map, cmap='hsv', vmin=0, vmax=180)
@@ -208,25 +256,39 @@ def plot_theta_with_highlight(theta_map, dilated_mask, title="Filtered Theta Map
     else:
         plt.show()
 
+
 # --- הפעלת הכל ---
 # root_dir = 'circles-900N/Rin=2.5cm'  # 🔁 שנה לנתיב שלך
-color = 'blue'
-
 radius = 5
+base_folder = "data"
+base_folder = "circles-900N"
+# base_folder = "3.5cm r - 3.5 mm w"
 
-# for prefix in ["Rin=1cm", "Rin=1.5cm", "Rin=2cm"]:
 colors = ['green', 'red', 'blue', 'white']
-old_colors = ['green', 'red', 'blue']
-for color in old_colors:#['white']:
+# colors = ['green', 'red', 'blue']
+# colors = ['green']
+colors = ['white']
+fig, axs = plt.subplots(2, 2) # 2 rows, 2 columns)
+index = -1
+color_title = "Stress Axis's by Color"
+radius_title = "Stress Axis's by Inner Radius"
+fig.suptitle(radius_title)
+for color in colors:  # ['white']:
     for i in range(2, 6):
-    # for i in [4]:
+    # for i in [5]:
+        index += 1
         inner_radius = i / 2
         inner_radius = inner_radius if math.ceil(inner_radius) != math.floor(inner_radius) else int(inner_radius)
-        prefix = f"Rin={inner_radius}cm"  # "Rin=2cm",
-        # color = colors[-1]
-        images_path = {i: f"circles-900N/{prefix}/{i}d/{color}.jpg" for i in range(0, 91, 10)}
 
+        prefix = f"Rin={inner_radius}cm"
+        # prefix = "900N"
+        # prefix = "4mm D"
+
+        images_path = {j: f"{base_folder}/{prefix}/{j}d/{color}.jpg" for j in range(0, 91, 10)}
+        # images_path = {j: f"{base_folder}/{prefix}/{j}d/{color}.jpg" for j in
+        #                [0, 20, 40, 60, 80, 90, 100, 120, 140, 160, 180, 200, 220, 140, 260, 280, 300, 320, 340]}
         # טען תמונות
+        # print(images_path)
         images = load_images_by_angle(images_path)
 
         # מצא מעגל מתוך תמונה כלשהי (ראשונה)
@@ -239,13 +301,26 @@ for color in old_colors:#['white']:
         # theta_map = extract_stress_directions(images, mask)
         theta_map = fast_stress_direction_torch(images, mask)
 
+        valid_mask = ~np.isnan(theta_map)
+        valid_rows = np.any(valid_mask, axis=1)
+        valid_cols = np.any(valid_mask, axis=0)
+
+        # Find the indices where data starts and ends
+        row_start, row_end = np.where(valid_rows)[0][[0, -1]]
+        col_start, col_end = np.where(valid_cols)[0][[0, -1]]
+
+        # Crop the theta_map to remove NaN borders
+        theta_map_cropped = theta_map[row_start:row_end + 1, col_start:col_end + 1]
+
         # תצוגה
-        dilated_mask = filter_and_dilate_theta(theta_map, min_deg=5, dilation_size=10)
+        dilated_mask = filter_and_dilate_theta(theta_map_cropped, min_deg=5, dilation_size=10)
         # plot_theta_with_highlight(theta_map, dilated_mask, save_path=f'axis/{prefix}/axis-{color}.png')
-        plot_theta_map(dilated_mask, f'axis/{prefix}/greyscale-axis-{color}.png', title=f"{prefix} stress axis's",
-                       outer_radius=r, inner_ratio=radius_ration, center=(cx, cy))
+
+        plot_theta_map(1 - dilated_mask, f'axis/{prefix}/greyscale-axis-{color}.png', title=f"disc {i} inner radius: {inner_radius} cm",#f"{prefix} stress axis's",
+                       outer_radius=r, inner_ratio=radius_ration, center=(len(theta_map_cropped)/2, len(theta_map_cropped[0])/2), axs=axs, index=index)
         # plot_theta_map(stress_axis, f'axis/{prefix}/axis-{color}.png', title=f"{prefix} stress axis's",
         #                outer_radius=r, inner_ratio=radius_ration, center=(cx, cy))
         # plot_theta_map(theta_map, f'axis/{prefix}/{color}.png')
         # axis_mask = detect_stress_axes(theta_map, threshold_deg=20, smooth_sigma=1.5)
         # plot_stress_axes(theta_map, axis_mask)
+plt.savefig("axis/radius_axis.png")

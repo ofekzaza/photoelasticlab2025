@@ -70,7 +70,7 @@ def classify_and_rename_images_in_subdirs(base_path):
     return renamed_files
 
 # Set your base folder here
-base_directory = "circles-900N/Rin=1cm"
+base_directory = "2.5cm r - 1cm w"
 
 # Run the renaming process
 results = classify_and_rename_images_in_subdirs(base_directory)

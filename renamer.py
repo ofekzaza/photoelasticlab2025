@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 
 # Path to the main directory containing subdirectories with images
-main_dir = "data/fringes/1800N"
+main_dir = "3.5cm r - 3.5 mm w"
 
 
 def detect_dominant_color(image_path, region_size=50):
